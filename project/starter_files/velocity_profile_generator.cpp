@@ -26,57 +26,23 @@ void VelocityProfileGenerator::setup(const double& time_gap,
   _slow_speed = slow_speed;
 };
 
-/*
-This class computes a velocity trajectory from a starting speed to a desired
-speed. It works in unison with the Behavioral plannner  as it needs to build a
-velocity profile for each of the states that the vehicle can be in.
-In the "Follow_lane" state we need to either speed up or speed down to maintain
-a speed target. In the "decel_to_stop" state we need to create a profile that
-allows us to decelerate smoothly to a stop line.
-
-The order of precedence for handling these cases is stop sign handling and then
-nominal lane maintenance. In a real velocity planner you would need to handle
-the coupling between these states, but for simplicity this project can be
-implemented by isolating each case.
-
-For all trajectories, the required acceleration is given by _a_max (confortable
-accel).
-Look at the structs.h for details on the types of manuevers/states that the
-behavior planner can be in.
-*/
-
 std::vector<TrajectoryPoint> VelocityProfileGenerator::generate_trajectory(
     const std::vector<PathPoint>& spiral, const double& desired_speed,
     const State& ego_state, const State& lead_car_state,
     const Maneuver& maneuver) const {
-  // LOG(INFO) << "Lead car x: " << lead_car_state.location.x;
-
   std::vector<TrajectoryPoint> trajectory;
   double start_speed = utils::magnitude(ego_state.velocity);
 
-  // LOG(INFO) << "Start Speed (m/s): " << start_speed;
-  // LOG(INFO) << "Desired Speed (m/s): " << desired_speed;
-
-  // Generate a trapezoidal trajectory to decelerate to stop.
   if (maneuver == DECEL_TO_STOP) {
-    // LOG(INFO) << "Generating velocity trajectory for DECEL_TO_STOP";
     trajectory = decelerate_trajectory(spiral, start_speed);
-  }
-  // If we need to follow the lead vehicle, make sure we decelerate to its speed
-  // by the time we reach the time gap point.
-  else if (maneuver == FOLLOW_VEHICLE) {
-    // LOG(INFO) << "Generating velocity trajectory for FOLLOW_VEHICLE";
+  } else if (maneuver == FOLLOW_VEHICLE) {
     trajectory =
         follow_trajectory(spiral, start_speed, desired_speed, lead_car_state);
-  }
-
-  // Otherwise, compute the trajectory to reach our desired speed.
-  else {
-    // LOG(INFO) << "Generating velocity trajectory for NOMINAL TRAVEL";
+  } else {
     trajectory = nominal_trajectory(spiral, start_speed, desired_speed);
   }
+
   // Interpolate between the zeroth state and the first state.
-  // This prevents the controller from getting stuck at the zeroth state.
   if (trajectory.size() > 1) {
     TrajectoryPoint interpolated_state;
     interpolated_state.path_point.x =
@@ -101,7 +67,6 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::decelerate_trajectory(
     const std::vector<PathPoint>& spiral, const double& start_speed) const {
   std::vector<TrajectoryPoint> trajectory;
 
-  // Using d = (v_f^2 - v_i^2) / (2 * a)
   auto decel_distance = calc_distance(start_speed, _slow_speed, -_a_max);
   auto brake_distance = calc_distance(_slow_speed, 0, -_a_max);
 
@@ -111,33 +76,23 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::decelerate_trajectory(
     path_length += utils::distance(spiral[i + 1], spiral[i]);
   }
 
-  /* If the brake distance exceeds the length of the path, then we cannot
-  perform a smooth deceleration and require a harder deceleration.  Build the path
-  up in reverse to ensure we reach zero speed at the required time.
-  */
   if (brake_distance + decel_distance > path_length) {
     std::vector<double> speeds;
     auto vf{0.0};
-    // Let's add the last point, i.e at the stopping line we should have speed
-    // 0.0.
     auto it = speeds.begin();
     speeds.insert(it, 0.0);
 
-    // Let's now go backwards until we get to the very beginning of the path
     for (int i = stop_index - 1; i >= 0; --i) {
       auto dist = utils::distance(spiral[i + 1], spiral[i]);
       auto vi = calc_final_speed(vf, -_a_max, dist);
       if (vi > start_speed) {
         vi = start_speed;
       }
-      // Let's add it
       auto it = speeds.begin();
       speeds.insert(it, vi);
       vf = vi;
     }
 
-    // At this point we have all the speeds. Now we need to create the
-    // trajectory
     double time_step{0.0};
     double time{0.0};
     for (size_t i = 0; i < speeds.size() - 1; ++i) {
@@ -146,10 +101,9 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::decelerate_trajectory(
       traj_point.v = speeds[i];
       traj_point.relative_time = time;
       trajectory.push_back(traj_point);
-      time_step = std::fabs(speeds[i] - speeds[i + 1]) / _a_max;  // Doubt!
+      time_step = std::fabs(speeds[i] - speeds[i + 1]) / _a_max;
       time += time_step;
     }
-    // We still need to add the last one
     auto i = spiral.size() - 1;
     TrajectoryPoint traj_point;
     traj_point.path_point = spiral[i];
@@ -157,17 +111,14 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::decelerate_trajectory(
     traj_point.relative_time = time;
     trajectory.push_back(traj_point);
 
-    // If the brake distance DOES NOT exceed the length of the path
   } else {
     auto brake_index{stop_index};
     auto temp_dist{0.0};
-    // Compute the index at which to start braking down to zero.
     while ((brake_index > 0) and (temp_dist < brake_distance)) {
       temp_dist +=
           utils::distance(spiral[brake_index], spiral[brake_index - 1]);
       --brake_index;
     }
-    // Compute the index to stop decelerating to the slow speed.
     uint decel_index{0};
     temp_dist = 0.0;
     while ((decel_index < brake_index) and (temp_dist < decel_distance)) {
@@ -175,8 +126,6 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::decelerate_trajectory(
           utils::distance(spiral[decel_index + 1], spiral[decel_index]);
       ++decel_index;
     }
-    // At this point we have all the speeds. Now we need to create the
-    // trajectory
     double time_step{0.0};
     double time{0.0};
     auto vi{start_speed};
@@ -201,12 +150,11 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::decelerate_trajectory(
       traj_point.v = vi;
       traj_point.relative_time = time;
       trajectory.push_back(traj_point);
-      auto dist = utils::distance(spiral[i + 1], spiral[i]);  // ??
+      auto dist = utils::distance(spiral[i + 1], spiral[i]);
       if (dist > DBL_EPSILON)
-        time_step = vi / dist;
+        time_step = dist / vi;
       else
         time_step = 0.00;
-
       time += time_step;
     }
     for (size_t i = brake_index; i < stop_index; ++i) {
@@ -221,7 +169,6 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::decelerate_trajectory(
       time += time_step;
       vi = vf;
     }
-    // Now we just need to add the last point.
     auto i = stop_index;
     TrajectoryPoint traj_point;
     traj_point.path_point = spiral[i];
@@ -240,20 +187,16 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::follow_trajectory(
   return trajectory;
 }
 
-// Computes a velocity trajectory for nominal speed tracking, a.k.a. Lane Follow
-// or Cruise Control
+// Computes a velocity trajectory for nominal speed tracking
 std::vector<TrajectoryPoint> VelocityProfileGenerator::nominal_trajectory(
     const std::vector<PathPoint>& spiral, const double& start_speed,
     double const& desired_speed) const {
   std::vector<TrajectoryPoint> trajectory;
   double accel_distance;
 
-  // LOG(INFO) << "MAX_ACCEL: " << _a_max;
   if (desired_speed < start_speed) {
-    // LOG(INFO) << "decelerate";
     accel_distance = calc_distance(start_speed, desired_speed, -_a_max);
   } else {
-    // LOG(INFO) << "accelerate";
     accel_distance = calc_distance(start_speed, desired_speed, _a_max);
   }
 
@@ -264,7 +207,6 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::nominal_trajectory(
         utils::distance(spiral[ramp_end_index], spiral[ramp_end_index + 1]);
     ramp_end_index += 1;
   }
-  // LOG(INFO) << "ramp_end_index:" << ramp_end_index;
 
   double time_step{0.0};
   double time{0.0};
@@ -275,13 +217,11 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::nominal_trajectory(
     double vf;
     if (desired_speed < start_speed) {
       vf = calc_final_speed(vi, -_a_max, dist);
-
       if (vf < desired_speed) {
         vf = desired_speed;
       }
     } else {
       vf = calc_final_speed(vi, _a_max, dist);
-
       if (vf > desired_speed) {
         vf = desired_speed;
       }
@@ -291,12 +231,6 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::nominal_trajectory(
     traj_point.v = vi;
     traj_point.relative_time = time;
     trajectory.push_back(traj_point);
-
-    // LOG(INFO) << i << "- x: " << traj_point.path_point.x
-    //          << ", y: " << traj_point.path_point.y
-    //          << ", th: " << traj_point.path_point.theta
-    //          << ", v: " << traj_point.v << ", t: " <<
-    //          traj_point.relative_time;
     time_step = std::fabs(vf - vi) / _a_max;
     time += time_step;
     vi = vf;
@@ -310,21 +244,14 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::nominal_trajectory(
     trajectory.push_back(traj_point);
 
     auto dist = utils::distance(spiral[i], spiral[i + 1]);
-    // This should never happen in a "nominal_trajectory", but it's a sanity
-    // check
     if (std::abs(desired_speed) < DBL_EPSILON) {
       time_step = 0.0;
     } else {
       time_step = dist / desired_speed;
     }
     time += time_step;
-
-    // LOG(INFO) << i << "- x: " << traj_point.path_point.x
-    //          << ", y: " << traj_point.path_point.y
-    //          << ", th: " << traj_point.path_point.theta
-    //          << ", v: " << traj_point.v << ", t: " <<
-    //          traj_point.relative_time;
   }
+
   // Add last point
   auto i = spiral.size() - 1;
   TrajectoryPoint traj_point;
@@ -332,24 +259,14 @@ std::vector<TrajectoryPoint> VelocityProfileGenerator::nominal_trajectory(
   traj_point.v = desired_speed;
   traj_point.relative_time = time;
   trajectory.push_back(traj_point);
-  // LOG(INFO) << i << "- x: " << traj_point.path_point.x
-  //          << ", y: " << traj_point.path_point.y
-  //          << ", th: " << traj_point.path_point.theta
-  //          << ", v: " << traj_point.v << ", t: " << traj_point.relative_time;
 
-  // LOG(INFO) << "Trajectory Generated";
   return trajectory;
 }
 
 /*
 Using d = (v_f^2 - v_i^2) / (2 * a), compute the distance
 required for a given acceleration/deceleration.
-
-Inputs: v_i - the initial speed in m/s.
-        v_f - the final speed in m/s.
-        a - the acceleration in m/s^2.
-        */
-
+*/
 double VelocityProfileGenerator::calc_distance(const double& v_i,
                                                const double& v_f,
                                                const double& a) const {
@@ -357,35 +274,22 @@ double VelocityProfileGenerator::calc_distance(const double& v_i,
   if (std::abs(a) < DBL_EPSILON) {
     d = std::numeric_limits<double>::infinity();
   } else {
-    // TODO-calc distance: use one of the common rectilinear accelerated
-    // equations of motion to calculate the distance traveled while going from
-    // v_i (initial velocity) to v_f (final velocity) at a constant
-    // acceleration/deceleration "a". HINT look at the description of this
-    // function. Make sure you handle div by 0
-    d = 0;  // <- Update
+    // d = (v_f^2 - v_i^2) / (2 * a)
+    d = (v_f * v_f - v_i * v_i) / (2.0 * a);
   }
   return d;
 }
 
 /*
-Using v_f = sqrt(v_i ^ 2 + 2ad), compute the final speed for a given
-acceleration across a given distance, with initial speed v_i.
-Make sure to check the discriminant of the radical. If it is negative,
-return zero as the final speed.
-Inputs : v_i - the initial speed in m / s.
-v_f - the ginal speed in m / s.
-a - the acceleration in m / s ^ 2.
+Using v_f = sqrt(v_i^2 + 2*a*d), compute the final speed.
 */
 double VelocityProfileGenerator::calc_final_speed(const double& v_i,
                                                   const double& a,
                                                   const double& d) const {
   double v_f{0.0};
-  // TODO-calc final speed: Calculate the final distance. HINT: look at the
-  // description of this function. Make sure you handle negative discriminant
-  // and make v_f = 0 in that case. If the discriminant is inf or nan return
-  // infinity
+  // discriminant = v_i^2 + 2*a*d
+  double disc = v_i * v_i + 2.0 * a * d;
 
-  double disc = 0;  // <- Fix this
   if (disc <= 0.0) {
     v_f = 0.0;
   } else if (disc == std::numeric_limits<double>::infinity() ||
@@ -394,7 +298,5 @@ double VelocityProfileGenerator::calc_final_speed(const double& v_i,
   } else {
     v_f = std::sqrt(disc);
   }
-  //   std::cout << "v_i, a, d: " << v_i << ", " << a << ", " << d
-  //             << ",  v_f: " << v_f << std::endl;
   return v_f;
 }
